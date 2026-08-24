@@ -1,0 +1,26 @@
+Package: SAboinETB
+Type: Package
+Title: Similarity-Adaptive BOIN Designs for Basket Dose Optimization
+Version: 1.0.1
+Authors@R: person("SA-BOIN-ETB", "Development Team", role = c("aut", "cre"),
+                  email = "haohaostats@users.noreply.github.com")
+Author: haohaostats [aut, cre]
+Maintainer: haohaostats <haohaostats@users.noreply.github.com>
+Description: Prospective design, interim analysis, borrowing diagnostics, and
+    final dose selection for similarity-adaptive Bayesian optimal interval
+    basket trials with joint toxicity and efficacy endpoints. The package
+    provides safety-gated, endpoint-specific borrowing with explicit borrowed
+    effective sample-size limits and audit-ready decision outputs.
+License: GPL-3
+URL: https://github.com/haohaostats/SAboinETB,
+    https://01a03253-f738-56f5-30c7-6829683c4a56.share.connect.posit.cloud/
+BugReports: https://github.com/haohaostats/SAboinETB/issues
+Encoding: UTF-8
+Depends: R (>= 4.2.0)
+Imports: stats, graphics, grDevices, utils
+Suggests: testthat (>= 3.0.0), knitr, rmarkdown
+Config/testthat/edition: 3
+VignetteBuilder: knitr
+Config/roxygen2/version: 8.1.0
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3

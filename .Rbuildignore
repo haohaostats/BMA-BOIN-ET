@@ -1,0 +1,6 @@
+^\.git$
+^\.gitignore$
+^\.github$
+^.*\.Rproj$
+^\.Rproj\.user$
+^rsconnect$
