@@ -129,9 +129,6 @@ fixed after closure. Exact enumeration scales with the Bell number and can
 become expensive for larger basket counts. Posterior tails use the full beta
 mixture, not a beta approximation fitted to its mean.
 
-Diagnostics report partition probabilities and symmetric, dose-specific
-co-clustering probabilities. They are not directional donor weights or BESS.
-
 ## Shiny application
 
 The Shiny application is deployed separately from the public package.
