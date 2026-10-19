@@ -1,8 +1,7 @@
 # BMA-BOIN-ET
 
 Endpoint-specific Bayesian partition model averaging for efficacy-toxicity
-basket dose finding. The R package is named **BMABOINET** (R package names
-cannot contain hyphens).
+basket dose finding.
 
 ## Install
 
