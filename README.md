@@ -72,24 +72,3 @@ The Shiny application is deployed separately from the public package.
 `run_app()` opens the existing hosted URL; inspect the software name and version
 in its audit panel before use. Installing this package does not update the
 hosted application. The private application source is not included here.
-
-## Validation
-
-The test suite checks exact partition calculations, endpoint-specific learning,
-ordered dose actions, irreversible closure, cumulative data validation, and
-reproduction of the manuscript example. The package intentionally ships no function help pages or vignettes; all
-usage documentation is maintained in this README. R CMD check therefore
-reports missing documentation for exported functions.
-
-## Development checks
-
-Run `testthat::test_local()` from the package source directory. The release
-was also compared with the locked manuscript simulation engine on 100 seeded
-random states (posterior means, eliminations, next doses, and final selections).
-The private Shiny server was exercised for design setup, example analysis,
-both diagnostic displays, and the audit panel using BMABOINET 2.0.0.
-
-Code contains no comments; this README is the sole maintained documentation.
-The private Shiny deployment manifest must be regenerated before redeployment.
-
-License: GPL-3.
