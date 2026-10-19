@@ -111,24 +111,6 @@ differs from the previous recommendation. This preserves irreversible
 elimination and closure. Archive the design before enrollment. Maximum sample
 sizes are validated; stop enrollment when a basket reaches its planned total.
 
-## Locked method
-
-| Component | Implementation |
-|:--|:--|
-| Sharing | Exact partition averaging separately for each endpoint and dose |
-| Prior | Beta(1,1); uniform number of groups, then uniform partitions within each group count |
-| Permanent toxicity elimination | Local tail probability greater than 0.95, after at least 3 local patients; removes that dose and higher doses |
-| Permanent futility elimination | Both local and BMA futility probabilities greater than 0.50, after at least 3 local patients |
-| Allocation | Local or BMA toxicity action takes priority; BOIN-ET interval decisions and BMA efficacy ranking |
-| Lowest-dose toxicity action | Closes the basket and deactivates all doses |
-| Final selection | Active dose, at least 6 local patients, local and BMA toxicity tails at most 0.70, BMA futility at most 0.50 |
-| Final ranking | Local-sample-weighted isotonic toxicity, utility 40 - 40 pT + 60 pE; ties use lower toxicity then lower dose |
-
-For four baskets, all 15 partitions are enumerated. The basket set remains
-fixed after closure. Exact enumeration scales with the Bell number and can
-become expensive for larger basket counts. Posterior tails use the full beta
-mixture, not a beta approximation fitted to its mean.
-
 ## Shiny application
 
 [Open the Shiny App](https://01a03253-f738-56f5-30c7-6829683c4a56.share.connect.posit.cloud/)
