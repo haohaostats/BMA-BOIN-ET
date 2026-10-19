@@ -191,5 +191,5 @@ test_that("the default example uses the Chapter 4 data", {
   x <- example_interim_data()
   expect_identical(x, example_manuscript_data())
   expect_equal(nrow(x), 20L)
-  expect_equal(unname(tapply(x$n, x$basket, sum)), rep(24, 4))
+  expect_equal(as.numeric(tapply(x$n, x$basket, sum)), rep(24, 4))
 })
