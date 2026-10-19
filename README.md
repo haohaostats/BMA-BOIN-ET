@@ -66,21 +66,6 @@ mixture, not a beta approximation fitted to its mean.
 Diagnostics report partition probabilities and symmetric, dose-specific
 co-clustering probabilities. They are not directional donor weights or BESS.
 
-## Migration from 1.0.1
-
-This is a major method change, not a renamed version of the old algorithm.
-Use `library(BMABOINET)` and recreate saved design and analysis objects.
-The public workflow function names remain familiar, but output classes and
-diagnostics have changed. `plot_borrowing()` now accepts `"coclustering"` or
-`"partitions"`; decision tables contain `bma_mean_tox` and `bma_mean_eff`.
-
-The historical SA-BOIN-ETB package remains reproducible from its original tag:
-
-```r
-remotes::install_github("haohaostats/BMA-BOIN-ET@v1.0.1")
-library(SAboinETB)
-```
-
 ## Shiny application
 
 The Shiny application is deployed separately from the public package.
