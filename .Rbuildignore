@@ -4,3 +4,8 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
 ^rsconnect$
+
+^check-clean$
+^.*\.Rcheck$
+^.*\.tar\.gz$
+^\.test-library$

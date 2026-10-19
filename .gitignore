@@ -7,3 +7,6 @@
 renv/library/
 renv/staging/
 rsconnect/
+
+.test-library/
+check-clean/

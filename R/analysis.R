@@ -1,11 +1,5 @@
-#' Validate cumulative interim data
-#'
-#' @param data Data frame with columns `basket`, `dose`, `n`, `tox`, and `eff`.
-#' @param design A design returned by [setup_design()].
-#' @return A validated and ordered data frame.
-#' @export
 validate_interim_data <- function(data, design) {
-  stopifnot(inherits(design, "SAboinETB_design"))
+  stopifnot(inherits(design, "BMABOINET_design"))
   required <- c("basket", "dose", "n", "tox", "eff")
   if (!is.data.frame(data) || !all(required %in% names(data))) {
     stop("Interim data must contain basket, dose, n, tox, and eff columns.")
@@ -86,9 +80,9 @@ validate_interim_data <- function(data, design) {
   out
 }
 
-.working_rate <- function(post, k, j) {
-  if (post$n[k, j] <= 0) return(0)
-  post$y[k, j] / post$n[k, j]
+.local_rate <- function(events, n, k, j) {
+  if (n[k, j] <= 0) return(NA_real_)
+  events[k, j] / n[k, j]
 }
 
 .current_indices <- function(design, mat, current_dose, previous_analysis) {
@@ -127,10 +121,14 @@ validate_interim_data <- function(data, design) {
                   dimnames = list(design$basket_names,
                                   as.character(design$dose_levels))))
   }
-  if (!inherits(previous_analysis, "SAboinETB_analysis")) {
+  if (!inherits(previous_analysis, "BMABOINET_analysis")) {
     stop("previous_analysis must be returned by update_trial().")
   }
   previous_design <- previous_analysis$design
+  locked <- setdiff(names(design), "created")
+  if (!identical(previous_design[locked], design[locked])) {
+    stop("previous_analysis does not use the locked design.")
+  }
   if (!identical(previous_design$basket_names, design$basket_names) ||
       !identical(previous_design$dose_levels, design$dose_levels)) {
     stop("previous_analysis does not use the locked design.")
@@ -138,195 +136,173 @@ validate_interim_data <- function(data, design) {
   previous_analysis$active
 }
 
-.apply_elimination <- function(active, mat, bt, be, design) {
-  open <- rowSums(active) > 0
+.apply_elimination <- function(active, mat, toxicity, efficacy, design) {
   for (k in seq_len(design$K)) {
-    if (!open[k]) next
     for (j in seq_len(design$J)) {
       if (!active[k, j]) next
-      local_t_bad <- mat$n[k, j] >= design$min_eliminate &&
+      local_t_bad <- mat$n[k, j] >= design$min_eliminate_t &&
         .beta_prob_gt(mat$tox[k, j], mat$n[k, j], design$target_tox,
                       design$prior_tox) > design$toxicity_elimination_cutoff
       if (local_t_bad) {
         active[k, j:design$J] <- FALSE
         next
       }
-      local_e_bad <- mat$n[k, j] >= design$min_eliminate &&
+      local_e_bad <- mat$n[k, j] >= design$min_eliminate_e &&
         .beta_prob_lt(mat$eff[k, j], mat$n[k, j], design$efficacy_null,
                       design$prior_eff) > design$efficacy_elimination_cutoff
-      working_e_bad <- be$n[k, j] >= design$min_eliminate &&
-        .beta_prob_lt(be$y[k, j], be$n[k, j], design$efficacy_null,
-                      design$prior_eff) > design$efficacy_elimination_cutoff
-      if (local_e_bad && working_e_bad) active[k, j] <- FALSE
+      bma_e_bad <- .mixture_prob_lt(
+        efficacy, k, j, design$efficacy_null
+      ) > design$efficacy_elimination_cutoff
+      if (local_e_bad && bma_e_bad) active[k, j] <- FALSE
     }
-    open[k] <- any(active[k, ])
   }
-  list(active = active, open = open)
+  list(active = active, open = rowSums(active) > 0)
 }
 
-.local_escalation_ok <- function(mat, k, j, design) {
-  mat$n[k, j] >= design$min_escalate &&
-    .beta_prob_gt(mat$tox[k, j], mat$n[k, j], design$target_tox,
-                  design$prior_tox) <= design$escalation_gate_cutoff
-}
-
-.choose_next_dose <- function(k, current, active, mat, bt, be, design) {
-  j <- current[k]
-  p_t <- .working_rate(bt, k, j)
-  bounds <- get_boundaries(design)
-  tried_doses <- which(mat$n[k, ] > 0)
-  frontier <- if (length(tried_doses)) max(tried_doses) else j
-
-  if (p_t > bounds["deescalate"]) {
-    active_lower <- which(active[k, ] & seq_len(design$J) < j)
-    if (length(active_lower)) {
-      return(list(
-        index = as.integer(max(active_lower)), frontier = frontier,
-        rule = paste(
-          "Working toxicity crossed the de-escalation boundary;",
-          "selected the highest active lower dose"
-        )
-      ))
-    }
-    if (isTRUE(active[k, j])) {
-      return(list(
-        index = as.integer(j), frontier = frontier,
-        rule = paste(
-          "Working toxicity crossed the de-escalation boundary, but the",
-          "current dose is the lowest active dose"
-        )
-      ))
-    }
-    return(list(
-      index = NA_integer_, frontier = frontier,
-      rule = paste(
-        "Working toxicity crossed the de-escalation boundary and no",
-        "active lower dose remains; close the basket"
-      )
-    ))
-  }
-
-  frontier_gate <- .local_escalation_ok(mat, k, frontier, design)
-  if (frontier < design$J && active[k, frontier + 1L] && frontier_gate) {
-    frontier_t <- .working_rate(bt, k, frontier)
-    frontier_e <- .working_rate(be, k, frontier)
-    frontier_t_tail <- .beta_prob_gt(
-      bt$y[k, frontier], bt$n[k, frontier], design$target_tox,
-      design$prior_tox
-    )
-    if (frontier_t <= design$exploration_toxicity_cutoff &&
-        frontier_t_tail <= design$exploration_toxicity_tail_cutoff &&
-        frontier_e <= design$exploration_efficacy_cutoff) {
-      return(list(index = as.integer(frontier + 1L), frontier = frontier,
-                  rule = "Safety-gated extension of the exploration frontier"))
-    }
-  }
-
-  tried <- which(active[k, ] & mat$n[k, ] > 0)
-  if (!length(tried)) {
-    return(list(index = NA_integer_, frontier = frontier,
-                rule = "No active previously tried dose; close the basket"))
-  }
-  locally_safe <- vapply(tried, function(x) {
-    .beta_prob_gt(mat$tox[k, x], mat$n[k, x], design$target_tox,
-                  design$prior_tox) <=
-      design$local_toxicity_selection_cutoff
-  }, logical(1))
-  candidates <- tried[locally_safe]
-  if (!length(candidates)) {
-    return(list(
-      index = NA_integer_, frontier = frontier,
-      rule = paste(
-        "No locally toxicity-admissible active previously tried dose;",
-        "close the basket"
-      )
-    ))
-  }
-  pt <- vapply(candidates, function(x) {
-    .beta_mean(bt$y[k, x], bt$n[k, x], design$prior_tox)
-  }, numeric(1))
-  pe <- vapply(candidates, function(x) {
-    .beta_mean(be$y[k, x], be$n[k, x], design$prior_eff)
-  }, numeric(1))
-  utility <- .expected_utility(pt, pe, design$utility)
-  best <- candidates[utility == max(utility)]
+.best_by_efficacy <- function(candidates, k, toxicity, efficacy) {
+  if (!length(candidates)) return(NA_integer_)
+  pe <- efficacy$mean[k, candidates]
+  best <- candidates[pe == max(pe)]
   if (length(best) > 1L) {
-    best_pt <- pt[candidates %in% best]
-    best <- best[best_pt == min(best_pt)]
+    pt <- toxicity$mean[k, best]
+    best <- best[pt == min(pt)]
   }
-  list(index = as.integer(min(best)), frontier = frontier,
-       rule = "Utility selection among locally toxicity-admissible tried doses")
+  as.integer(min(best))
 }
 
-#' Run a cumulative interim analysis
-#'
-#' @param design A design returned by [setup_design()].
-#' @param data Cumulative basket-dose counts.
-#' @param current_dose Optional named vector giving the dose currently assigned
-#'   in each basket. If omitted, the preceding recommendation is used when
-#'   `previous_analysis` is supplied; otherwise the highest observed dose is
-#'   used.
-#' @param previous_analysis Optional preceding analysis. Supplying it preserves
-#'   irreversible dose eliminations and the prospective dose trajectory.
-#' @details Recommendations are restricted to the post-elimination active set.
-#'   Immediate de-escalation selects the highest active dose below the current
-#'   dose. If no active lower dose exists, the basket stays only when the
-#'   current dose remains active; otherwise it closes. When frontier extension
-#'   is unavailable, utility is maximized only over previously tried, active,
-#'   locally toxicity-admissible doses. An empty candidate set closes the
-#'   basket.
-#' @return An object of class `SAboinETB_analysis`.
-#' @export
+.deescalate <- function(k, j, active) {
+  lower <- which(active[k, ] & seq_len(ncol(active)) < j)
+  if (length(lower)) {
+    return(list(index = as.integer(max(lower)),
+                rule = "Toxicity de-escalation to the highest active lower dose"))
+  }
+  if (isTRUE(active[k, j])) {
+    return(list(index = as.integer(j),
+                rule = "Toxicity signal at the lowest active dose; stay pending elimination"))
+  }
+  list(index = NA_integer_,
+       rule = "Toxicity action required and no active lower dose remains; close the basket")
+}
+
+.choose_next_dose <- function(k, current, active, mat, toxicity, efficacy,
+                              design) {
+  j <- current[k]
+  bounds <- get_boundaries(design)
+  local_t <- .local_rate(mat$tox, mat$n, k, j)
+  bma_t <- toxicity$mean[k, j]
+  bma_e <- efficacy$mean[k, j]
+
+  if ((!is.na(local_t) && local_t >= bounds["deescalate"]) ||
+      bma_t >= bounds["deescalate"]) {
+    return(.deescalate(k, j, active))
+  }
+
+  if (!active[k, j]) {
+    higher <- which(active[k, ] & seq_len(design$J) > j)
+    if (length(higher)) {
+      return(list(index = as.integer(min(higher)),
+                  rule = "Current dose was eliminated for futility; move to the next active higher dose"))
+    }
+    lower_tried <- which(active[k, ] & seq_len(design$J) < j & mat$n[k, ] > 0)
+    target <- .best_by_efficacy(lower_tried, k, toxicity, efficacy)
+    if (!is.na(target)) {
+      return(list(index = target,
+                  rule = "Current dose was eliminated for futility; select the best active tried lower dose"))
+    }
+    return(list(index = NA_integer_,
+                rule = "Current dose was eliminated and no assignable active dose remains; close the basket"))
+  }
+
+  if (bma_e > bounds["efficacy"]) {
+    return(list(index = as.integer(j),
+                rule = "BOIN-ET: efficacy above its boundary and toxicity below de-escalation"))
+  }
+
+  if (bma_t <= bounds["escalate"]) {
+    if (j < design$J && active[k, j + 1L]) {
+      return(list(index = as.integer(j + 1L),
+                  rule = "BOIN-ET: low efficacy and toxicity; escalate"))
+    }
+    return(list(index = as.integer(j),
+                rule = "BOIN-ET escalation unavailable; stay"))
+  }
+
+  if (j < design$J && active[k, j + 1L] && mat$n[k, j + 1L] == 0) {
+    return(list(index = as.integer(j + 1L),
+                rule = "BOIN-ET middle cell: explore the untried adjacent higher dose"))
+  }
+  neighbours <- intersect(seq.int(max(1L, j - 1L), min(design$J, j + 1L)),
+                          which(active[k, ] & mat$n[k, ] > 0))
+  target <- .best_by_efficacy(neighbours, k, toxicity, efficacy)
+  if (is.na(target)) {
+    return(list(index = NA_integer_,
+                rule = "BOIN-ET middle cell has no active observed neighbour; close the basket"))
+  }
+  list(index = target,
+       rule = "BOIN-ET middle cell: maximize BMA efficacy over active observed neighbours")
+}
+
 update_trial <- function(design, data, current_dose = NULL,
                          previous_analysis = NULL) {
   data <- validate_interim_data(data, design)
   mat <- .as_matrices(data, design)
-  bt <- .borrow_endpoint(mat$tox, mat$n, "toxicity", design)
-  be <- .borrow_endpoint(mat$eff, mat$n, "efficacy", design)
+  toxicity <- .partition_bma_endpoint(mat$tox, mat$n, design$prior_tox, design)
+  efficacy <- .partition_bma_endpoint(mat$eff, mat$n, design$prior_eff, design)
   current <- .current_indices(design, mat, current_dose, previous_analysis)
   active <- .initial_active(design, previous_analysis)
-  elimination <- .apply_elimination(active, mat, bt, be, design)
-  active <- elimination$active; open <- elimination$open
+  elimination <- .apply_elimination(active, mat, toxicity, efficacy, design)
+  active <- elimination$active
+  open <- elimination$open
+  if (!is.null(previous_analysis)) {
+    old <- previous_analysis$matrices
+    if (any(mat$n < old$n) || any(mat$tox < old$tox) || any(mat$eff < old$eff) ||
+        any(mat$tox - old$tox > mat$n - old$n) ||
+        any(mat$eff - old$eff > mat$n - old$n)) {
+      stop("Cumulative counts must extend the previous analysis without changing past outcomes.")
+    }
+    open <- open & previous_analysis$open
+  }
 
   decisions <- vector("list", design$K)
   for (k in seq_len(design$K)) {
     j <- current[k]
-    tried <- which(mat$n[k, ] > 0)
-    frontier <- if (length(tried)) max(tried) else j
+
+    lowest_toxicity <- j == 1L && mat$n[k, j] > 0 &&
+      (mat$tox[k, j] / mat$n[k, j] >= get_boundaries(design)["deescalate"] ||
+       toxicity$mean[k, j] >= get_boundaries(design)["deescalate"])
+    if (lowest_toxicity) {
+      active[k, ] <- FALSE
+      open[k] <- FALSE
+    }
     if (!open[k]) {
       target <- NA_integer_
-      rule <- "All doses are inactive; close the basket"
+      rule <- if (lowest_toxicity) "Toxicity action at the lowest dose; close the basket" else
+        "Basket is closed; no further enrollment"
+    } else if (sum(mat$n[k, ]) == 0) {
+      target <- 1L
+      rule <- "Start the basket at the lowest dose"
     } else {
-      choice <- .choose_next_dose(k, current, active, mat, bt, be, design)
-      target <- choice$index; frontier <- choice$frontier; rule <- choice$rule
+      choice <- .choose_next_dose(k, current, active, mat, toxicity,
+                                  efficacy, design)
+      target <- choice$index
+      rule <- choice$rule
     }
+    if (is.na(target)) open[k] <- FALSE
     action <- if (is.na(target)) "Close basket" else if (target > j) {
       "Escalate"
     } else if (target < j) "De-escalate" else "Stay"
-    local_tox_tail <- .beta_prob_gt(
-      mat$tox[k, j], mat$n[k, j], design$target_tox, design$prior_tox)
-    working_tox_tail <- .beta_prob_gt(
-      bt$y[k, j], bt$n[k, j], design$target_tox, design$prior_tox)
-    local_futility <- .beta_prob_lt(
-      mat$eff[k, j], mat$n[k, j], design$efficacy_null, design$prior_eff)
-    working_futility <- .beta_prob_lt(
-      be$y[k, j], be$n[k, j], design$efficacy_null, design$prior_eff)
     decisions[[k]] <- data.frame(
-      basket = design$basket_names[k],
-      current_dose = design$dose_levels[j],
-      frontier_dose = design$dose_levels[frontier],
+      basket = design$basket_names[k], current_dose = design$dose_levels[j],
       local_n = mat$n[k, j], local_tox = mat$tox[k, j],
       local_eff = mat$eff[k, j],
-      posterior_tox = .beta_mean(bt$y[k, j], bt$n[k, j], design$prior_tox),
-      posterior_eff = .beta_mean(be$y[k, j], be$n[k, j], design$prior_eff),
-      working_rate_tox = .working_rate(bt, k, j),
-      working_rate_eff = .working_rate(be, k, j),
-      toxicity_bess = bt$bess[k, j], efficacy_bess = be$bess[k, j],
-      local_tox_tail = local_tox_tail,
-      working_tox_tail = working_tox_tail,
-      local_futility = local_futility,
-      working_futility = working_futility,
-      frontier_gate = .local_escalation_ok(mat, k, frontier, design),
+      bma_mean_tox = toxicity$mean[k, j],
+      bma_mean_eff = efficacy$mean[k, j],
+      local_tox_tail = .beta_prob_gt(
+        mat$tox[k, j], mat$n[k, j], design$target_tox, design$prior_tox),
+      bma_tox_tail = .mixture_prob_gt(toxicity, k, j, design$target_tox),
+      local_futility = .beta_prob_lt(
+        mat$eff[k, j], mat$n[k, j], design$efficacy_null, design$prior_eff),
+      bma_futility = .mixture_prob_lt(efficacy, k, j, design$efficacy_null),
       action = action,
       recommended_dose = if (is.na(target)) NA else design$dose_levels[target],
       reason = rule, stringsAsFactors = FALSE
@@ -334,102 +310,85 @@ update_trial <- function(design, data, current_dose = NULL,
   }
   analysis <- list(
     design = design, data = data, matrices = mat,
-    toxicity = bt, efficacy = be, active = active, open = open,
-    current_index = current, decisions = do.call(rbind, decisions),
-    boundaries = get_boundaries(design),
+    toxicity = toxicity, efficacy = efficacy,
+    active = active, open = open, current_index = current,
+    decisions = do.call(rbind, decisions), boundaries = get_boundaries(design),
     timestamp = format(Sys.time(), tz = "UTC", usetz = TRUE)
   )
-  class(analysis) <- "SAboinETB_analysis"
+  class(analysis) <- "BMABOINET_analysis"
   analysis
 }
 
-#' @rdname print.SAboinETB
-#' @export
-print.SAboinETB_analysis <- function(x, ...) {
-  cat("SA-BOIN-ETB interim analysis\n")
+print.BMABOINET_analysis <- function(x, ...) {
+  cat("BMA-BOIN-ET partition-model-averaged interim analysis\n")
   cat("  Timestamp:", x$timestamp, "\n\n")
-  print(x$decisions[c("basket", "current_dose", "frontier_dose", "local_n",
-                      "action", "recommended_dose", "toxicity_bess",
-                      "efficacy_bess")], row.names = FALSE)
+  print(x$decisions[c("basket", "current_dose", "local_n", "action",
+                      "recommended_dose", "bma_mean_tox", "bma_mean_eff")],
+        row.names = FALSE)
   invisible(x)
 }
 
-#' Obtain basket-specific interim recommendations
-#' @param analysis An analysis returned by [update_trial()].
-#' @return Audit-ready recommendation table.
-#' @export
 recommend_dose <- function(analysis) {
-  stopifnot(inherits(analysis, "SAboinETB_analysis"))
+  stopifnot(inherits(analysis, "BMABOINET_analysis"))
   analysis$decisions
 }
 
-#' Select final optimal doses
-#' @param analysis An analysis returned by [update_trial()].
-#' @return One-row-per-basket final selection table.
-#' @export
 select_od <- function(analysis) {
-  stopifnot(inherits(analysis, "SAboinETB_analysis"))
-  d <- analysis$design; mat <- analysis$matrices
+  stopifnot(inherits(analysis, "BMABOINET_analysis"))
+  d <- analysis$design
+  mat <- analysis$matrices
   rows <- lapply(seq_len(d$K), function(k) {
+    observed <- which(mat$n[k, ] > 0)
+    tox_iso <- rep(NA_real_, d$J)
+    if (length(observed)) {
+      tox_iso[observed] <- .weighted_pava(
+        analysis$toxicity$mean[k, observed], mat$n[k, observed]
+      )
+    }
     admissible <- integer()
     for (j in seq_len(d$J)) {
       if (!analysis$active[k, j] || mat$n[k, j] < d$min_select) next
       local_t <- .beta_prob_gt(mat$tox[k, j], mat$n[k, j],
                                d$target_tox, d$prior_tox)
-      working_t <- .beta_prob_gt(analysis$toxicity$y[k, j],
-        analysis$toxicity$n[k, j], d$target_tox, d$prior_tox)
-      local_e <- .beta_prob_lt(mat$eff[k, j], mat$n[k, j],
-                               d$efficacy_null, d$prior_eff)
-      working_e <- .beta_prob_lt(analysis$efficacy$y[k, j],
-        analysis$efficacy$n[k, j], d$efficacy_null, d$prior_eff)
-      safe <- local_t <= d$local_toxicity_selection_cutoff &&
-        working_t <= d$working_toxicity_selection_cutoff
-      active <- local_e <= d$efficacy_elimination_cutoff &&
-        working_e <= d$working_efficacy_selection_cutoff
-      if (safe && active) admissible <- c(admissible, j)
+      bma_t <- .mixture_prob_gt(analysis$toxicity, k, j, d$target_tox)
+      bma_e <- .mixture_prob_lt(analysis$efficacy, k, j, d$efficacy_null)
+      if (max(local_t, bma_t) <= d$toxicity_selection_cutoff &&
+          bma_e <= d$efficacy_elimination_cutoff) {
+        admissible <- c(admissible, j)
+      }
     }
     if (!length(admissible)) {
       return(data.frame(
         basket = d$basket_names[k], selected_dose = NA,
         posterior_tox = NA_real_, posterior_eff = NA_real_,
-        expected_utility = NA_real_, status = "No admissible active dose"))
+        expected_utility = NA_real_, status = "No admissible active dose"
+      ))
     }
-    tox_means <- vapply(seq_len(d$J), function(j) {
-      .beta_mean(analysis$toxicity$y[k, j], analysis$toxicity$n[k, j],
-                 d$prior_tox)
-    }, numeric(1))
-    tox_iso <- .weighted_pava(
-      tox_means, sum(d$prior_tox) + analysis$toxicity$n[k, ])
-    eff_means <- vapply(seq_len(d$J), function(j) {
-      .beta_mean(analysis$efficacy$y[k, j], analysis$efficacy$n[k, j],
-                 d$prior_eff)
-    }, numeric(1))
-    utility <- .expected_utility(tox_iso[admissible],
-                                 eff_means[admissible], d$utility)
+    utility <- .expected_utility(
+      tox_iso[admissible], analysis$efficacy$mean[k, admissible], d$utility
+    )
     best <- admissible[utility == max(utility)]
     if (length(best) > 1L) best <- best[tox_iso[best] == min(tox_iso[best])]
     best <- min(best)
     data.frame(
       basket = d$basket_names[k], selected_dose = d$dose_levels[best],
-      posterior_tox = tox_iso[best], posterior_eff = eff_means[best],
-      expected_utility = .expected_utility(tox_iso[best], eff_means[best],
-                                           d$utility),
-      status = "Selected")
+      posterior_tox = tox_iso[best],
+      posterior_eff = analysis$efficacy$mean[k, best],
+      expected_utility = .expected_utility(
+        tox_iso[best], analysis$efficacy$mean[k, best], d$utility
+      ),
+      status = "Selected"
+    )
   })
   do.call(rbind, rows)
 }
 
-#' Extract borrowing diagnostics
-#' @param analysis An analysis returned by [update_trial()].
-#' @return List of endpoint-specific similarity, BESS, and donor weight arrays.
-#' @export
 borrowing_diagnostics <- function(analysis) {
-  stopifnot(inherits(analysis, "SAboinETB_analysis"))
+  stopifnot(inherits(analysis, "BMABOINET_analysis"))
   list(
-    toxicity_similarity = analysis$toxicity$similarity,
-    efficacy_similarity = analysis$efficacy$similarity,
-    toxicity_bess = analysis$toxicity$bess,
-    efficacy_bess = analysis$efficacy$bess,
-    toxicity_weights = analysis$toxicity$weights,
-    efficacy_weights = analysis$efficacy$weights)
+    toxicity_partition_weights = analysis$toxicity$partition_weights,
+    efficacy_partition_weights = analysis$efficacy$partition_weights,
+    toxicity_coclustering = analysis$toxicity$coclustering,
+    efficacy_coclustering = analysis$efficacy$coclustering
+  )
 }

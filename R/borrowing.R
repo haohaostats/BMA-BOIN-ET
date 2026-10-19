@@ -1,89 +1,113 @@
 .beta_mean <- function(y, n, prior) (prior[1] + y) / (sum(prior) + n)
 
 .beta_prob_gt <- function(y, n, threshold, prior) {
-  stats::pbeta(threshold, prior[1] + y, prior[2] + n - y, lower.tail = FALSE)
+  stats::pbeta(threshold, prior[1] + y, prior[2] + n - y,
+               lower.tail = FALSE)
 }
 
 .beta_prob_lt <- function(y, n, threshold, prior) {
   stats::pbeta(threshold, prior[1] + y, prior[2] + n - y)
 }
 
-.log_bf_equal <- function(y1, n1, y2, n2, prior) {
-  a <- prior[1]; b <- prior[2]
-  lbeta(a + y1 + y2, b + n1 + n2 - y1 - y2) + lbeta(a, b) -
-    lbeta(a + y1, b + n1 - y1) - lbeta(a + y2, b + n2 - y2)
-}
-
-.curve_similarity <- function(y, n, xi, design, prior) {
-  K <- nrow(n); J <- ncol(n); out <- diag(1, K)
-  for (k in seq_len(K - 1L)) for (kp in (k + 1L):K) {
-    prior_odds <- log(xi[k, kp] / max(1e-8, 1 - xi[k, kp]))
-    prior_odds <- max(-design$prior_odds_cap,
-                      min(design$prior_odds_cap, prior_odds))
-    observed <- which(n[k, ] > 0 & n[kp, ] > 0)
-    if (!length(observed)) {
-      score <- 0
-    } else {
-      evidence <- 0; common_information <- 0
-      for (j in observed) {
-        m <- min(n[k, j], n[kp, j])
-        reliability <- min(1, m / 6)
-        lbf <- .log_bf_equal(y[k, j], n[k, j], y[kp, j], n[kp, j], prior)
-        evidence <- evidence + reliability * max(-5, min(5, lbf))
-        common_information <- common_information + m
-      }
-      curve_reliability <- min(1, common_information / design$curve_saturation)
-      weighted_evidence <- curve_reliability * evidence
-      prior_discount <- if (prior_odds * weighted_evidence < 0) {
-        exp(-abs(weighted_evidence) / design$prior_conflict_scale)
-      } else 1
-      score <- stats::plogis(prior_discount * prior_odds + weighted_evidence) *
-        curve_reliability
+.set_partitions <- function(K) {
+  if (K < 1L) return(list(integer()))
+  out <- list()
+  labels <- integer(K)
+  labels[1] <- 1L
+  visit <- function(i, largest) {
+    if (i > K) {
+      out[[length(out) + 1L]] <<- labels
+      return(invisible(NULL))
     }
-    out[k, kp] <- out[kp, k] <- score
+    for (g in seq_len(largest + 1L)) {
+      labels[i] <<- g
+      visit(i + 1L, max(largest, g))
+    }
+    invisible(NULL)
   }
+  if (K == 1L) out[[1L]] <- labels else visit(2L, 1L)
   out
 }
 
-.local_compatibility <- function(y1, n1, y2, n2, scale, prior) {
-  if (n1 <= 0 || n2 <= 0) return(0)
-  m1 <- .beta_mean(y1, n1, prior); m2 <- .beta_mean(y2, n2, prior)
-  v1 <- m1 * (1 - m1) / (n1 + sum(prior) + 1)
-  v2 <- m2 * (1 - m2) / (n2 + sum(prior) + 1)
-  z <- abs(m1 - m2) / sqrt(v1 + v2 + 1e-10)
-  exp(-0.5 * (z / scale)^2)
+.log_sum_exp <- function(x) {
+  anchor <- max(x)
+  anchor + log(sum(exp(x - anchor)))
 }
 
-.borrow_endpoint <- function(y, n, endpoint, design) {
-  is_tox <- identical(endpoint, "toxicity")
-  prior <- if (is_tox) design$prior_tox else design$prior_eff
-  xi <- if (is_tox) design$prior_similarity_t else design$prior_similarity_e
-  cap_abs <- if (is_tox) design$bess_cap_t else design$bess_cap_e
-  cap_ratio <- if (is_tox) design$bess_ratio_t else design$bess_ratio_e
-  conflict_scale <- if (is_tox) design$conflict_scale_t else design$conflict_scale_e
-  similarity <- .curve_similarity(y, n, xi, design, prior)
-  K <- nrow(n); J <- ncol(n); yb <- y; nb <- n
-  weights <- array(0, c(K, K, J),
-                   dimnames = list(design$basket_names, design$basket_names,
-                                   as.character(design$dose_levels)))
-  for (k in seq_len(K)) for (j in seq_len(J)) {
-    if (n[k, j] < design$min_borrow) next
-    raw <- numeric(K)
-    for (kp in setdiff(seq_len(K), k)) {
-      if (n[kp, j] <= 0) next
-      raw[kp] <- similarity[k, kp] *
-        .local_compatibility(y[k, j], n[k, j], y[kp, j], n[kp, j],
-                             conflict_scale, prior)
+.partition_bma_endpoint <- function(y, n, prior, design) {
+  K <- nrow(n)
+  J <- ncol(n)
+  partitions <- design$partitions
+  group_counts <- vapply(partitions, max, integer(1))
+  log_prior <- -log(K) - log(design$stirling_counts[group_counts])
+  means <- matrix(NA_real_, K, J, dimnames = dimnames(n))
+  mixtures <- vector("list", J)
+  partition_weights <- matrix(
+    NA_real_, length(partitions), J,
+    dimnames = list(design$partition_labels, as.character(design$dose_levels))
+  )
+  coclustering <- array(
+    0, c(K, K, J),
+    dimnames = list(design$basket_names, design$basket_names,
+                    as.character(design$dose_levels))
+  )
+
+  for (j in seq_len(J)) {
+    log_marginal <- numeric(length(partitions))
+    component_alpha <- matrix(NA_real_, length(partitions), K)
+    component_beta <- matrix(NA_real_, length(partitions), K)
+    for (r in seq_along(partitions)) {
+      membership <- partitions[[r]]
+      for (g in seq_len(max(membership))) {
+        members <- which(membership == g)
+        total_y <- sum(y[members, j])
+        total_n <- sum(n[members, j])
+        alpha <- prior[1] + total_y
+        beta <- prior[2] + total_n - total_y
+        log_marginal[r] <- log_marginal[r] +
+          lbeta(alpha, beta) - lbeta(prior[1], prior[2])
+        component_alpha[r, members] <- alpha
+        component_beta[r, members] <- beta
+      }
     }
-    raw_ess <- sum(raw * n[, j])
-    cap <- min(cap_abs, cap_ratio * n[k, j])
-    scaling <- if (raw_ess > 0) min(1, cap / raw_ess) else 0
-    weights[k, , j] <- raw * scaling
-    yb[k, j] <- y[k, j] + sum(weights[k, , j] * y[, j])
-    nb[k, j] <- n[k, j] + sum(weights[k, , j] * n[, j])
+    log_posterior <- log_prior + log_marginal
+    weights <- exp(log_posterior - .log_sum_exp(log_posterior))
+    partition_weights[, j] <- weights
+    mixtures[[j]] <- lapply(seq_len(K), function(k) {
+      list(weight = weights, alpha = component_alpha[, k],
+           beta = component_beta[, k])
+    })
+    means[, j] <- vapply(mixtures[[j]], function(mix) {
+      sum(mix$weight * mix$alpha / (mix$alpha + mix$beta))
+    }, numeric(1))
+    for (k in seq_len(K)) for (kp in seq_len(K)) {
+      together <- vapply(partitions, function(partition) {
+        partition[k] == partition[kp]
+      }, logical(1))
+      coclustering[k, kp, j] <- sum(weights[together])
+    }
   }
-  dimnames(similarity) <- list(design$basket_names, design$basket_names)
-  list(y = yb, n = nb, weights = weights, similarity = similarity,
-       bess = nb - n)
+
+  list(mean = means, mixtures = mixtures,
+       partition_weights = partition_weights,
+       coclustering = coclustering)
 }
 
+.mixture_prob_gt <- function(endpoint, k, j, threshold) {
+  mix <- endpoint$mixtures[[j]][[k]]
+  sum(mix$weight * stats::pbeta(threshold, mix$alpha, mix$beta,
+                                lower.tail = FALSE))
+}
+
+.mixture_prob_lt <- function(endpoint, k, j, threshold) {
+  mix <- endpoint$mixtures[[j]][[k]]
+  sum(mix$weight * stats::pbeta(threshold, mix$alpha, mix$beta))
+}
+
+.mixture_quantile <- function(endpoint, k, j, probability,
+                              tolerance = 1e-10) {
+  mix <- endpoint$mixtures[[j]][[k]]
+  cdf <- function(x) sum(mix$weight * stats::pbeta(x, mix$alpha, mix$beta))
+  stats::uniroot(function(x) cdf(x) - probability, c(0, 1),
+                 tol = tolerance)$root
+}

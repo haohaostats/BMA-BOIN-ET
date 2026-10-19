@@ -1,5 +1,5 @@
 library(testthat)
-library(SAboinETB)
+library(BMABOINET)
 
-test_check("SAboinETB")
+test_check("BMABOINET")
 
