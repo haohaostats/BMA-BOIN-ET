@@ -136,3 +136,22 @@ mixture, not a beta approximation fitted to its mean.
 ```r
 run_app()
 ```
+
+The app provides four workspaces:
+
+- **Design setup:** specify baskets, doses, clinical targets, and sample sizes; view the decision boundaries.
+- **Interim analysis:** enter cumulative counts or load the Chapter 4 example, then review dose recommendations and final selections.
+- **Borrowing diagnostics:** explore toxicity and efficacy co-clustering and partition probabilities at each dose.
+- **Export and audit:** download the input data, recommendation table, and complete analysis record.
+
+### Design setup
+
+![BMA-BOIN-ET design setup](assets/shiny-design.png)
+
+### Chapter 4 example analysis
+
+![BMA-BOIN-ET analysis of the Chapter 4 example](assets/shiny-analysis.png)
+
+### Borrowing diagnostics
+
+![BMA-BOIN-ET endpoint-specific borrowing diagnostics](assets/shiny-diagnostics.png)
