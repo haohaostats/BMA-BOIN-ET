@@ -131,6 +131,8 @@ mixture, not a beta approximation fitted to its mean.
 
 ## Shiny application
 
+[Open the Shiny App](https://01a03253-f738-56f5-30c7-6829683c4a56.share.connect.posit.cloud/)
+
 ```r
 run_app()
 ```
