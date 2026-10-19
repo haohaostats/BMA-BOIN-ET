@@ -131,7 +131,6 @@ mixture, not a beta approximation fitted to its mean.
 
 ## Shiny application
 
-The Shiny application is deployed separately from the public package.
-`run_app()` opens the existing hosted URL; inspect the software name and version
-in its audit panel before use. Installing this package does not update the
-hosted application. The private application source is not included here.
+```r
+run_app()
+```
