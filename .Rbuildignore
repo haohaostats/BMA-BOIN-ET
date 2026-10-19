@@ -9,3 +9,5 @@
 ^.*\.Rcheck$
 ^.*\.tar\.gz$
 ^\.test-library$
+
+^assets$

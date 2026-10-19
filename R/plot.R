@@ -44,14 +44,7 @@ plot_borrowing <- function(analysis, endpoint = c("toxicity", "efficacy"),
 }
 
 example_interim_data <- function() {
-  data.frame(
-    basket = rep(paste0("Basket ", 1:4), each = 3),
-    dose = rep(1:3, 4),
-    n = c(3, 6, 6, 3, 6, 3, 3, 6, 3, 3, 6, 3),
-    tox = c(0, 1, 1, 0, 1, 0, 0, 2, 2, 0, 1, 1),
-    eff = c(0, 2, 4, 1, 3, 2, 0, 1, 0, 1, 2, 1),
-    stringsAsFactors = FALSE
-  )
+  example_manuscript_data()
 }
 
 example_manuscript_data <- function() {
